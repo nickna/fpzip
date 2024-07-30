@@ -1,0 +1,151 @@
+name: CMake on multiple platforms and architectures
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x86 and ARM64
+          - os: windows-latest
+            build_type: Release
+            c_compiler: cl
+            cpp_compiler: cl
+            arch: x64
+          - os: windows-latest
+            build_type: Release
+            c_compiler: cl
+            cpp_compiler: cl
+            arch: arm64
+
+          # Linux x86 and ARM64
+          - os: ubuntu-latest
+            build_type: Release
+            c_compiler: gcc
+            cpp_compiler: g++
+            arch: x64
+          - os: ubuntu-latest
+            build_type: Release
+            c_compiler: gcc
+            cpp_compiler: g++
+            arch: arm64
+
+          # macOS x86 and ARM64
+          - os: macos-latest
+            build_type: Release
+            c_compiler: clang
+            cpp_compiler: clang++
+            arch: x64
+          - os: macos-latest
+            build_type: Release
+            c_compiler: clang
+            cpp_compiler: clang++
+            arch: arm64
+
+          # FreeBSD (limited support in GitHub Actions)
+          - os: ubuntu-latest
+            build_type: Release
+            c_compiler: clang
+            cpp_compiler: clang++
+            arch: x64
+            freebsd: true
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up FreeBSD
+      if: matrix.freebsd
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        prepare: |
+          pkg install -y cmake
+
+    - name: Install ARM64 cross-compilation tools (Linux)
+      if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+    - name: Set up QEMU for ARM64 emulation
+      if: matrix.arch == 'arm64'
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Configure CMake
+      run: >
+        cmake -B ${{ github.workspace }}/build
+        -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
+        -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        ${{ matrix.arch == 'arm64' && '-DCMAKE_SYSTEM_PROCESSOR=aarch64' || '' }}
+        ${{ matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest' && '-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/arm64-toolchain.cmake' || '' }}
+        -S ${{ github.workspace }}
+
+    - name: Build
+      run: cmake --build ${{ github.workspace }}/build --config ${{ matrix.build_type }}
+
+    - name: Test
+      working-directory: ${{ github.workspace }}/build
+      run: ctest --build-config ${{ matrix.build_type }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.os }}-${{ matrix.arch }}-binaries
+        path: ${{ github.workspace }}/build/**/*.{exe,dll,so,dylib}
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure CMake for iOS
+      run: |
+        cmake -B ${{ github.workspace }}/build-ios \
+        -GXcode \
+        -DCMAKE_SYSTEM_NAME=iOS \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+        -DCMAKE_INSTALL_PREFIX=~/ios-install \
+        -S ${{ github.workspace }}
+    - name: Build for iOS
+      run: cmake --build ${{ github.workspace }}/build-ios --config Release --target install
+    - name: Upload iOS artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ios-binaries
+        path: ~/ios-install
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    - name: Configure CMake for Android
+      run: |
+        cmake -B ${{ github.workspace }}/build-android \
+        -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+        -DANDROID_ABI=arm64-v8a \
+        -DANDROID_PLATFORM=android-23 \
+        -S ${{ github.workspace }}
+    - name: Build for Android
+      run: cmake --build ${{ github.workspace }}/build-android --config Release
+    - name: Upload Android artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: android-binaries
+        path: ${{ github.workspace }}/build-android/**/*.so
